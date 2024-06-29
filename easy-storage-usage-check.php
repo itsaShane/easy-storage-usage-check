@@ -1,9 +1,14 @@
 <?php
 /*
 Plugin Name: Easy Storage Usage Check
+Plugin URI: https://github.com/itsaShane/easy-storage-usage-check
 Description: A plugin to calculate storage usage, display the total storage used, the 10 largest directories, and the 50 largest files. Allows deletion of selected files, clearing the results, and exporting to CSV.
-Version: 1.2
+Version: 1.4
 Author: ShaneW
+Author URI: https://shanewalsh.ie
+License: GPLv2 or later
+License URI: http://www.gnu.org/licenses/gpl-2.0.html
+Text Domain: easy-storage-usage-check
 */
 
 if (!defined('ABSPATH')) {
@@ -35,6 +40,12 @@ function esuc_display_page() {
     ?>
     <div class="wrap">
         <h1><?php esc_html_e('Easy Storage Usage Check', 'easy-storage-usage-check'); ?></h1>
+        <div class="notice notice-warning">
+            <p><?php esc_html_e('For security, the plugin cannot delete core WordPress files critical to its functioning.', 'easy-storage-usage-check'); ?></p>
+            <?php if (is_dir(ABSPATH . '_wpeprivate')): ?>
+                <p><?php esc_html_e('Files located in _wpeprivate must be deleted by WP Engine staff.', 'easy-storage-usage-check'); ?></p>
+            <?php endif; ?>
+        </div>
         <div class="esuc-buttons">
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="esuc_generate_report">
@@ -50,11 +61,6 @@ function esuc_display_page() {
                 <input type="hidden" name="action" value="esuc_download_report">
                 <?php wp_nonce_field('esuc_download_report_action', 'esuc_download_report_nonce'); ?>
                 <?php submit_button(__('Export to CSV', 'easy-storage-usage-check'), 'secondary', 'submit', false); ?>
-            </form>
-            <form id="esuc_delete_form" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return esuc_confirm_deletion();">
-                <input type="hidden" name="action" value="esuc_delete_files">
-                <?php wp_nonce_field('esuc_delete_files_action', 'esuc_delete_files_nonce'); ?>
-                <?php submit_button(__('Delete Selected Files', 'easy-storage-usage-check'), 'delete', 'submit', false, array('id' => 'esuc_delete_button', 'style' => 'background-color:red;color:white;')); ?>
             </form>
         </div>
         <div id="esuc_report">
@@ -85,25 +91,24 @@ function esuc_display_page() {
 
 // Function to generate and display the report
 function esuc_generate_report() {
-    // Verify nonce
-    if (!isset($_POST['esuc_generate_report_nonce']) || !wp_verify_nonce($_POST['esuc_generate_report_nonce'], 'esuc_generate_report_action')) {
+    if (!esuc_verify_nonce('esuc_generate_report_nonce', 'esuc_generate_report_action')) {
         return;
     }
 
-    // Ensure the user has the required capability
     if (!current_user_can('manage_options')) {
         return;
     }
 
-    // Calculate storage usage
     $report = esuc_calculate_storage_usage();
-
-    // Store the report in a transient
     set_transient('esuc_report', $report, HOUR_IN_SECONDS);
 
-    // Redirect back to the admin page
     wp_redirect(esc_url_raw(admin_url('admin.php?page=easy-storage-usage-check')));
     exit;
+}
+
+// Verify nonce helper function
+function esuc_verify_nonce($nonce_field, $action) {
+    return isset($_POST[$nonce_field]) && wp_verify_nonce($_POST[$nonce_field], $action);
 }
 
 // Function to display the report
@@ -111,7 +116,6 @@ function esuc_display_report() {
     $report = get_transient('esuc_report');
     if ($report) {
         echo '<h2>' . esc_html__('Total Storage Used: ', 'easy-storage-usage-check') . esc_html(number_format($report['total_storage'] / 1048576, 2)) . ' MB</h2>';
-
         echo '<h2>' . esc_html__('Largest Directories', 'easy-storage-usage-check') . '</h2>';
         echo '<table class="widefat fixed">';
         echo '<thead><tr><th>' . esc_html__('Directory', 'easy-storage-usage-check') . '</th><th>' . esc_html__('Size (MB)', 'easy-storage-usage-check') . '</th></tr></thead>';
@@ -122,19 +126,29 @@ function esuc_display_report() {
         echo '</tbody></table>';
 
         echo '<h2>' . esc_html__('Largest Files', 'easy-storage-usage-check') . '</h2>';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return esuc_confirm_deletion();">';
+        echo '<input type="hidden" name="action" value="esuc_delete_files">';
         echo '<table id="esuc_file_list" class="widefat fixed">';
         echo '<thead><tr><th>' . esc_html__('File', 'easy-storage-usage-check') . '</th><th>' . esc_html__('Size (MB)', 'easy-storage-usage-check') . '</th><th>' . esc_html__('Select', 'easy-storage-usage-check') . '</th></tr></thead>';
         echo '<tbody>';
         foreach ($report['largest_files'] as $file) {
-            echo '<tr><td>' . esc_html($file['name']) . '</td><td>' . esc_html(number_format($file['size'] / 1048576, 2)) . '</td><td><input type="checkbox" name="esuc_selected_files[]" value="' . esc_attr($file['name']) . '"></td></tr>';
+            $file_path = $file['name'];
+            if (esuc_can_delete_file($file_path)) {
+                echo '<tr><td>' . esc_html($file['name']) . '</td><td>' . esc_html(number_format($file['size'] / 1048576, 2)) . '</td><td><input type="checkbox" name="esuc_selected_files[]" value="' . esc_attr($file['name']) . '"></td></tr>';
+            } else {
+                echo '<tr><td>' . esc_html($file['name']) . '</td><td>' . esc_html(number_format($file['size'] / 1048576, 2)) . '</td><td>' . esc_html__('Cannot delete', 'easy-storage-usage-check') . '</td></tr>';
+            }
         }
         echo '</tbody></table>';
+        wp_nonce_field('esuc_delete_files_action', 'esuc_delete_files_nonce');
+        submit_button(__('Delete Selected Files', 'easy-storage-usage-check'), 'delete', 'submit', false, array('id' => 'esuc_delete_button', 'style' => 'background-color:red;color:white;'));
+        echo '</form>';
     } else {
         echo '<p>' . esc_html__('No report generated yet.', 'easy-storage-usage-check') . '</p>';
     }
 }
 
-// Function to calculate storage usage
+// Helper function to calculate storage usage
 function esuc_calculate_storage_usage() {
     $directory = ABSPATH;
     $largest_directories = esuc_get_largest_directories($directory, 10);
@@ -159,8 +173,13 @@ function esuc_get_largest_directories($directory, $limit) {
     foreach ($iterator as $file) {
         if ($file->isDir()) {
             $dir_path = $file->getPathname();
-            $dir_size = esuc_get_directory_size($dir_path);
-            $dir_sizes[] = ['name' => $dir_path, 'size' => $dir_size];
+            try {
+                $dir_size = esuc_get_directory_size($dir_path);
+                $dir_sizes[] = ['name' => $dir_path, 'size' => $dir_size];
+            } catch (UnexpectedValueException $e) {
+                // Skip directories that cannot be read
+                continue;
+            }
         }
     }
 
@@ -174,8 +193,11 @@ function esuc_get_largest_directories($directory, $limit) {
 // Helper function to get directory size
 function esuc_get_directory_size($directory) {
     $size = 0;
-    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, RecursiveDirectoryIterator::SKIP_DOTS)) as $file) {
-        $size += $file->getSize();
+    $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, RecursiveDirectoryIterator::SKIP_DOTS));
+    foreach ($iterator as $file) {
+        if ($file->isFile()) {
+            $size += $file->getSize();
+        }
     }
     return $size;
 }
@@ -203,71 +225,124 @@ function esuc_get_largest_files($directory, $limit) {
 // Helper function to get the total storage size
 function esuc_get_total_storage($directory) {
     $total_size = 0;
-    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, RecursiveDirectoryIterator::SKIP_DOTS)) as $file) {
-        $total_size += $file->getSize();
+    $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, RecursiveDirectoryIterator::SKIP_DOTS));
+    foreach ($iterator as $file) {
+        if ($file->isFile()) {
+            $total_size += $file->getSize();
+        }
     }
     return $total_size;
 }
 
 // Function to handle file deletion
 function esuc_delete_files() {
-    // Verify nonce
-    if (!isset($_POST['esuc_delete_files_nonce']) || !wp_verify_nonce($_POST['esuc_delete_files_nonce'], 'esuc_delete_files_action')) {
+    if (!esuc_verify_nonce('esuc_delete_files_nonce', 'esuc_delete_files_action')) {
+        error_log('Nonce verification failed');
         return;
     }
 
-    // Ensure the user has the required capability
     if (!current_user_can('manage_options')) {
+        error_log('User does not have the required capability');
         return;
     }
 
     if (isset($_POST['esuc_selected_files']) && is_array($_POST['esuc_selected_files'])) {
         foreach ($_POST['esuc_selected_files'] as $file) {
             $file_path = sanitize_text_field($file);
+
+            // Ensure the file path is within the allowed directory and not in _wpeprivate folder
+            $allowed_dir = trailingslashit(ABSPATH) . 'uploads/'; // Example subdirectory
+            if (strpos(realpath($file_path), realpath($allowed_dir)) !== 0 || esuc_is_core_file($file_path) || strpos($file_path, '_wpeprivate') !== false) {
+                error_log('File path is outside the allowed directory, is a core file, or is within _wpeprivate folder: ' . $file_path);
+                continue;
+            }
+
             if (file_exists($file_path)) {
-                wp_delete_file($file_path); // Use wp_delete_file() instead of unlink()
+                if (is_writable($file_path)) {
+                    // Attempt to delete using wp_delete_file
+                    if (wp_delete_file($file_path)) {
+                        error_log('File deleted successfully using wp_delete_file: ' . $file_path);
+                    } else {
+                        error_log('wp_delete_file failed: ' . $file_path);
+                        // Attempt to delete using unlink as fallback
+                        if (@unlink($file_path)) {
+                            error_log('File deleted successfully using unlink: ' . $file_path);
+                        } else {
+                            error_log('unlink failed: ' . $file_path . ' - Error: ' . error_get_last()['message']);
+                        }
+                    }
+                } else {
+                    error_log('File is not writable: ' . $file_path);
+                }
+            } else {
+                error_log('File does not exist: ' . $file_path);
             }
         }
+    } else {
+        error_log('No files selected for deletion');
     }
 
-    // Redirect back to the admin page
     wp_redirect(esc_url_raw(admin_url('admin.php?page=easy-storage-usage-check')));
     exit;
 }
 
+// Function to check if a file is a core WordPress file
+function esuc_is_core_file($file_path) {
+    $core_files = [
+        'wp-config.php',
+        'wp-settings.php',
+        'wp-load.php',
+        'wp-blog-header.php',
+        'index.php',
+        // Add other core files as needed
+    ];
+
+    $wp_admin_files = glob(ABSPATH . 'wp-admin/*');
+    $wp_includes_files = glob(ABSPATH . 'wp-includes/*');
+
+    $core_files = array_merge($core_files, $wp_admin_files, $wp_includes_files);
+
+    foreach ($core_files as $core_file) {
+        if (realpath($file_path) == realpath($core_file)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Helper function to check if a file can be deleted
+function esuc_can_delete_file($file_path) {
+    $allowed_dir = trailingslashit(ABSPATH) . 'uploads/'; // Example subdirectory
+    return strpos(realpath($file_path), realpath($allowed_dir)) === 0 && !esuc_is_core_file($file_path) && strpos($file_path, '_wpeprivate') === false;
+}
+
 // Function to clear the results
 function esuc_clear_results() {
-    // Verify nonce
-    if (!isset($_POST['esuc_clear_results_nonce']) || !wp_verify_nonce($_POST['esuc_clear_results_nonce'], 'esuc_clear_results_action')) {
+    if (!esuc_verify_nonce('esuc_clear_results_nonce', 'esuc_clear_results_action')) {
         return;
     }
 
-    // Ensure the user has the required capability
     if (!current_user_can('manage_options')) {
         return;
     }
 
-    // Delete the transient storing the report
     delete_transient('esuc_report');
 
-    // Redirect back to the admin page
     wp_redirect(esc_url_raw(admin_url('admin.php?page=easy-storage-usage-check')));
     exit;
 }
 
 // Function to handle the download report action
 function esuc_download_report() {
-    // Verify nonce
-    if (!isset($_POST['esuc_download_report_nonce']) || !wp_verify_nonce($_POST['esuc_download_report_nonce'], 'esuc_download_report_action')) {
+    if (!esuc_verify_nonce('esuc_download_report_nonce', 'esuc_download_report_action')) {
         return;
     }
 
-    // Ensure the user has the required capability
     if (!current_user_can('manage_options')) {
         return;
     }
 
-    // Get the report
     $report = get_transient('esuc_report');
 
     if (!$report) {
@@ -275,21 +350,17 @@ function esuc_download_report() {
         exit;
     }
 
-    // Use WP_Filesystem API
     global $wp_filesystem;
     if (empty($wp_filesystem)) {
         require_once ABSPATH . 'wp-admin/includes/file.php';
         WP_Filesystem();
     }
 
-    // Create CSV content
     $csv_content = '';
 
-    // Write the total storage used
     $csv_content .= 'Total Storage Used' . "\n";
     $csv_content .= number_format($report['total_storage'] / 1048576, 2) . ' MB' . "\n\n";
 
-    // Write the largest directories
     $csv_content .= 'Largest Directories' . "\n";
     $csv_content .= 'Directory, Size (MB)' . "\n";
     foreach ($report['largest_directories'] as $dir) {
@@ -297,23 +368,19 @@ function esuc_download_report() {
     }
     $csv_content .= "\n";
 
-    // Write the largest files
     $csv_content .= 'Largest Files' . "\n";
     $csv_content .= 'File, Size (MB)' . "\n";
     foreach ($report['largest_files'] as $file) {
         $csv_content .= esc_html($file['name']) . ', ' . esc_html(number_format($file['size'] / 1048576, 2)) . "\n";
     }
 
-    // Create a temporary file and write the CSV content
     $temp_file = wp_tempnam();
     $wp_filesystem->put_contents($temp_file, $csv_content);
 
-    // Read the file content and output it for download
     header('Content-Type: text/csv');
     header('Content-Disposition: attachment; filename="storage-usage-report.csv"');
-    echo esc_html($wp_filesystem->get_contents($temp_file));
+    echo $wp_filesystem->get_contents($temp_file);
 
-    // Delete the temporary file using wp_delete_file
     wp_delete_file($temp_file);
 
     exit;
