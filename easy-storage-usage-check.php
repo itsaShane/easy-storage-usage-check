@@ -2,7 +2,7 @@
 /*
 Plugin Name: Easy Storage Usage Check
 Plugin URI: https://github.com/itsaShane/easy-storage-usage-check
-Description: A plugin to calculate storage usage, display the total storage used, the 10 largest directories, and the 50 largest files. Allows deletion of selected files, clearing the results, and exporting to CSV.
+Description: Display the total storage used, the 10 largest directories, and the 50 largest files. Allows deletion of selected files, clearing the results, and exporting to CSV.
 Version: 1.4
 Author: ShaneW
 Author URI: https://shanewalsh.ie
@@ -247,6 +247,14 @@ function esuc_delete_files() {
     }
 
     if (isset($_POST['esuc_selected_files']) && is_array($_POST['esuc_selected_files'])) {
+        global $wp_filesystem;
+
+        // Initialize the WP filesystem, no more using file_exists() function
+        if (empty($wp_filesystem)) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            WP_Filesystem();
+        }
+
         foreach ($_POST['esuc_selected_files'] as $file) {
             $file_path = sanitize_text_field($file);
 
@@ -257,18 +265,19 @@ function esuc_delete_files() {
                 continue;
             }
 
-            if (file_exists($file_path)) {
-                if (is_writable($file_path)) {
+            if ($wp_filesystem->exists($file_path)) {
+                if ($wp_filesystem->is_writable($file_path)) {
                     // Attempt to delete using wp_delete_file
                     if (wp_delete_file($file_path)) {
                         error_log('File deleted successfully using wp_delete_file: ' . $file_path);
                     } else {
                         error_log('wp_delete_file failed: ' . $file_path);
-                        // Attempt to delete using unlink as fallback
-                        if (@unlink($file_path)) {
-                            error_log('File deleted successfully using unlink: ' . $file_path);
+                        // Attempt to delete using WP_Filesystem method as fallback
+                        if ($wp_filesystem->delete($file_path)) {
+                            error_log('File deleted successfully using WP_Filesystem: ' . $file_path);
                         } else {
-                            error_log('unlink failed: ' . $file_path . ' - Error: ' . error_get_last()['message']);
+                            $error = error_get_last();
+                            error_log('WP_Filesystem delete failed: ' . $file_path . ' - Error: ' . esc_html($error['message']));
                         }
                     }
                 } else {
@@ -379,7 +388,7 @@ function esuc_download_report() {
 
     header('Content-Type: text/csv');
     header('Content-Disposition: attachment; filename="storage-usage-report.csv"');
-    echo $wp_filesystem->get_contents($temp_file);
+    echo esc_html($wp_filesystem->get_contents($temp_file));
 
     wp_delete_file($temp_file);
 
